@@ -1,0 +1,218 @@
+---
+title: "Practical Machine Learning - Project Report"
+author: "Alexandre Vilcek"
+date: "Sunday, February 15, 2015"
+output: html_document
+---
+
+### Summary
+
+In this project we apply machine learning techniques to a classification task. The task is to try to predict how well barbell lift exercises were performed. To accomplish that, we are given a data set with data collected from 6 different individuals. Each individual had accelerometers on the belt, forearm, arm, and dumbell when performing the exercises, and were asked to perform the exercises several times in 5 different ways. Each of those different ways is a representative of how well the exercise is performed.
+
+We built 3 different models: one Deep Neural Network model, one Gradient Boosted Machine model, and one Random Forest model. For each model, we assessed the classification performance using random sub sampling cross-validation.
+
+We then applied the best model, Random Forest in this case, to 20 test cases for grading, as a second part of the assignment.
+
+The chosen model was able to correctly classify all 20 test cases.
+
+### Dataset
+
+The data used in this project was available at:
+
+training data: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+test data: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+More detail about the data set can be found at: http://groupware.les.inf.puc-rio.br/har
+
+### Loading and Examining the Data
+
+The first step is to load the training data set from the provided source:
+
+```{r chunk1}
+data <- read.csv('data/pml-training.csv', stringsAsFactors=F)
+```
+
+Now we perform an initial data inspection (output omitted for brevity):
+
+```{r chunk2, results='hide'}
+str(data)
+```
+
+We know that the outcome variable is named 'classe' and the remaining are potential predictors.
+
+We notice that there is a large number of variables that may have a high number of 'NA' strings and empty strings. From the respective variable names, it seems that these are summary calculations. Therefore they will have the majority of entries as 'NA' or empty strings.
+
+We will then count the number of 'NA' strings and empty strings for each variable and plot the corresponding distributions, so that we can eliminate those variables with higher counts:
+
+```{r chunk3}
+na_counts <- apply(data, 2, function(x) length(which(is.na(x))))
+plot(na_counts)
+```
+
+```{r chunk4}
+es_counts <- apply(data, 2, function(x) length(which(x=='')))
+plot(es_counts)
+```
+
+From the plots above, we notice that the variables that have 'NA' or empty strings, have the same counts and that is almost the totality of data samples. Therefore we remove those variables from the data set:
+
+```{r chunk5}
+pred_names <- intersect(names(which(na_counts==0)), names(which(es_counts==0)))
+```
+
+We also notice that there are some variables that seem to be metadata. These are the first 7 variables:
+
+```{r chunk6}
+pred_names[1:7]
+```
+
+We remove them, as they do not contribute with predictive power for the models:
+
+```{r chunk7}
+pred_names <- pred_names[8:length(pred_names)]
+```
+
+### Data Preparation
+
+We prune the data set, eliminating the summary and metadata related features that were identified. The final data set ends up with 52 predictors and the outcome:
+
+```{r chunk8}
+data <- data[pred_names]
+names(data)
+```
+
+We now generate data sets for training and validation. Out of sample error will be measured as the average of 3 training passes validated with random sub sampling cross-validation, where 60% of the data set will be used for training and 40% for validation. We use the outcome variable to split it with equal proportions of classes:
+
+```{r chunk9}
+library(caret)
+set.seed(102030)
+train <- list()
+test <- list()
+for(i in 1:3) {
+  index_train <- createDataPartition(y=data$classe, p=0.6, list=F) 
+  train[[i]] <- data[index_train,]
+  test[[i]] <- data[-index_train,]
+}
+```
+
+Now we train our models, experimenting with 3 different techniques available from the [Oxdata's H2O package](http://h2o.ai). We begin by loading H2O's R package and starting a local cluster with 4 processing threads and up to 6 GB memory: 
+
+```{r chunk10, results='hide'}
+library(h2o)
+```
+```{r chunk11}
+h2o_cluster <- h2o.init(ip = 'localhost', port =54321, max_mem_size = '6g', nthreads=4)
+```
+
+H2O's model training functions allows us to specify training and validation sets. In this way, our model training results will present a confusion matrix against the validation data set, which is our estimating of the out of sample error.
+
+### Model 1: 2-Layer Deep Neural Network
+
+```{r chunk12, results='hide'}
+deeplearning_models <- list()
+for(i in 1:3) {
+  h2o_data_train <- as.h2o(h2o_cluster, train[[i]], 'data_train')
+  h2o_data_test <- as.h2o(h2o_cluster, test[[i]], 'data_test')
+  deeplearning_model <- h2o.deeplearning(x=names(data[1:52]),
+                                         y=names(data[53]),
+                                         data=h2o_data_train,
+                                         validation=h2o_data_test,
+                                         override_with_best_model=T,
+                                         activation='RectifierWithDropout',
+                                         hidden=c(1000,1000),
+                                         adaptive_rate=T,
+                                         rho=0.99,
+                                         epsilon=1e-8,
+                                         nesterov_accelerated_gradient=T,
+                                         input_dropout_ratio=0.2,
+                                         hidden_dropout_ratios=c(0.5,0.5),
+                                         balance_classes=T,
+                                         epochs=500)
+  deeplearning_models[[i]] <- deeplearning_model
+}
+```
+
+### Model 2: Random Forest
+
+```{r chunk13, results='hide'}
+randomforest_models <- list()
+for(i in 1:3) {
+  h2o_data_train <- as.h2o(h2o_cluster, train[[i]], 'data_train')
+  h2o_data_test <- as.h2o(h2o_cluster, test[[i]], 'data_test')
+  randomforest_model <- h2o.randomForest(x=names(data[1:52]),
+                                         y=names(data[53]),
+                                         data=h2o_data_train,
+                                         validation=h2o_data_test,
+                                         ntree=100,
+                                         depth=50,
+                                         balance.classes=T,
+                                         type='BigData')
+  randomforest_models[[i]] <- randomforest_model
+}
+```
+
+### Model 3 Gradient Boosted Machine
+
+```{r chunk14, results='hide'}
+gradientboosted_models <- list()
+for(i in 1:3) {
+  h2o_data_train <- as.h2o(h2o_cluster, train[[i]], 'data_train')
+  h2o_data_test <- as.h2o(h2o_cluster, test[[i]], 'data_test')
+  gradientboosted_model <- h2o.gbm(x=names(data[1:52]),
+                                         y=names(data[53]),
+                                         data=h2o_data_train,
+                                         validation=h2o_data_test,
+                                         n.trees=100,
+                                         interaction.depth=50,
+                                         balance.classes=T)
+  gradientboosted_models[[i]] <- gradientboosted_model
+}
+```
+
+### Model training results
+
+We now assess the performance of the 3 models by averaging the out of sample error of the 3 training passes for each one:
+
+```{r chunk15}
+model_names <- c('Deep Neural Network', 'Random Forest', 'Gradient Boosted Model')
+acc_dnn <- vector()
+acc_rf <- vector()
+acc_gbm <- vector()
+for(i in 1:3) {
+  acc_dnn <- cbind(acc_dnn, deeplearning_models[[i]]@model$valid_class_error)
+  acc_rf <- cbind(acc_rf, randomforest_models[[i]]@model$confusion[6,6])
+  acc_gbm <- cbind(acc_gbm, gradientboosted_models[[i]]@model$confusion[6,6])
+}
+models <- data.frame(model_names, c(mean(acc_dnn), mean(acc_rf), mean(acc_gbm)))
+names(models) <- c('Model.Name', 'Model.Accuracy')
+models
+```
+
+We notice that the Random Forest models give the lowest out of sample error. Therefore we choose, from the 3 Random Forest models we have built, the one that presented the lowest error (actually we could have chosen any of them, as they were built using the same parametrization):
+
+```{r chunk16}
+acc_rf
+```
+
+Finally, from the listing above, the first Random Forest model presented the lowest error. We then choose it for scoring on the 20 test cases for submission:
+
+```{r chunk17}
+test <- read.csv('https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv', stringsAsFactors=F)
+test <- test[pred_names[1:52]]
+h2o_data_test <- as.h2o(h2o_cluster, test, 'data_test')
+h2o_model <- randomforest_models[[1]]
+predictions <- h2o.predict(h2o_model, h2o_data_test)
+predictions <- as.data.frame(predictions)$predict
+
+# generate files for submission
+pml_write_files = function(x){
+  n = length(x)
+  for(i in 1:n){
+    filename = paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+  }
+}
+pml_write_files(predictions)
+```
+
