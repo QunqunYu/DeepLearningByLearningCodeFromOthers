@@ -10,5 +10,6 @@ library(devtools)
 library(roxygen2)
 library(testthat)
 library(h2o)
+load("H2OPL/data/categoryEachDay.RData")
 
 localH2O = h2o.init()
